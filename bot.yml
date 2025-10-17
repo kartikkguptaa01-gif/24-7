@@ -1,0 +1,175 @@
+---
+# Kubernetes Deployment for OSINT Telegram Bot
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osint-telegram-bot
+  labels:
+    app: osint-telegram-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osint-telegram-bot
+  template:
+    metadata:
+      labels:
+        app: osint-telegram-bot
+    spec:
+      containers:
+      - name: osint-bot
+        image: osint-telegram-bot:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: bot-token
+        - name: OWNER_ID
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: owner-id
+        - name: OSIENT_API_URL
+          value: "https://osient.vercel.app/v1/mobile"
+        - name: FANTOM_API_BASE
+          value: "https://fantomdeluxe.vercel.app/api"
+        - name: FANTOM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: bot-secrets
+              key: fantom-api-key
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osint-bot-service
+spec:
+  selector:
+    app: osint-telegram-bot
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: osint-bot-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - osint-bot.yourdomain.com
+    secretName: osint-bot-tls
+  rules:
+  - host: osint-bot.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: osint-bot-service
+            port:
+              number: 80
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bot-secrets
+type: Opaque
+stringData:
+  bot-token: "7510786889:AAHVZ1O6RHqNQaXPVO7OWTC8F9rqTh3aunE"
+  owner-id: "5390129810"
+  fantom-api-key: "ALILUBABA"
+---
+# Docker Compose alternative for local/dev deployment
+# docker-compose.yaml
+---
+version: '3.8'
+services:
+  osint-bot:
+    build: .
+    container_name: osint_telegram_bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN:-7510786889:AAHVZ1O6RHqNQaXPVO7OWTC8F9rqTh3aunE}
+      - OWNER_ID=${OWNER_ID:-5390129810}
+      - OSIENT_API_URL=${OSIENT_API_URL:-https://osient.vercel.app/v1/mobile}
+      - FANTOM_API_BASE=${FANTOM_API_BASE:-https://fantomdeluxe.vercel.app/api}
+      - FANTOM_API_KEY=${FANTOM_API_KEY:-ALILUBABA}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+---
+# Dockerfile
+# (Place this in your project root)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Expose port (for health checks)
+EXPOSE 8080
+
+# Health check endpoint (you'll need to add this to your bot)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Run the bot
+CMD ["python", "bot.py"]
+---
+# requirements.txt
+# (Create this file in your project root)
+python-telegram-bot==20.7
+aiohttp==3.9.1
